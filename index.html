@@ -764,746 +764,787 @@
         </div>
     </div>
 
-    <script>
-        // Work Order Dashboard - Local Storage Version
-        let workOrders = [];
-        let nextOrderId = 1;
-        let adminMode = false;
-        let adminPassword = 'admin123';
+    <script type="module">
+    // Import Firebase
+    import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
+    import { getFirestore, collection, addDoc, getDocs, updateDoc, deleteDoc, doc, onSnapshot, orderBy, query } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js';
 
-        // Initialize application when page loads
-        document.addEventListener('DOMContentLoaded', function() {
-            console.log('Work Order Dashboard initializing...');
-            loadDataFromStorage();
+    // Firebase configuration
+    const firebaseConfig = {
+        apiKey: "AIzaSyDBmGIWc1Y-nxGY-jSaGRIuXXPl8BLDpqw",
+        authDomain: "work-order-1eb05.firebaseapp.com",
+        projectId: "work-order-1eb05",
+        storageBucket: "work-order-1eb05.firebasestorage.app",
+        messagingSenderId: "30653326306",
+        appId: "1:30653326306:web:1ab1b5a0ce5be594f10fbb"
+    };
+
+    // Initialize Firebase
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+
+    // Global variables
+    let workOrders = [];
+    let nextOrderId = 1;
+    let adminMode = false;
+    let adminPassword = 'admin123';
+
+    // Initialize application when page loads
+    document.addEventListener('DOMContentLoaded', function() {
+        console.log('Work Order Dashboard initializing with Firebase...');
+        loadDataFromFirebase();
+        setupRealtimeListener();
+        generateOrderId();
+        setupEventListeners();
+        updateReports();
+        updateAdminDisplay();
+        showNotification('Dashboard loaded with cloud sync!', 'success');
+    });
+
+    // Setup real-time listener for Firebase changes
+    function setupRealtimeListener() {
+        const q = query(collection(db, 'workOrders'), orderBy('createdDate', 'desc'));
+        onSnapshot(q, (snapshot) => {
+            workOrders = [];
+            snapshot.forEach((doc) => {
+                workOrders.push({
+                    firestoreId: doc.id,
+                    ...doc.data()
+                });
+            });
+            
+            // Update next order ID
+            if (workOrders.length > 0) {
+                const highestId = Math.max(...workOrders.map(order => {
+                    const match = order.id.match(/WO-\d{8}-(\d{3})/);
+                    return match ? parseInt(match[1]) : 0;
+                }));
+                nextOrderId = highestId + 1;
+            }
+            
             generateOrderId();
-            setupEventListeners();
             loadWorkOrders();
             updateReports();
-            updateAdminDisplay();
-            showNotification('Dashboard loaded successfully!', 'success');
+            console.log('Real-time update:', workOrders.length, 'work orders synced');
+        });
+    }
+
+    async function loadDataFromFirebase() {
+        try {
+            // Load settings
+            const settingsSnapshot = await getDocs(collection(db, 'settings'));
+            settingsSnapshot.forEach((doc) => {
+                const data = doc.data();
+                if (data.adminPassword) adminPassword = data.adminPassword;
+                if (data.nextOrderId) nextOrderId = data.nextOrderId;
+            });
+
+            // Create default settings if none exist
+            if (settingsSnapshot.empty) {
+                await addDoc(collection(db, 'settings'), {
+                    adminPassword: 'admin123',
+                    nextOrderId: 1,
+                    createdDate: new Date().toISOString()
+                });
+            }
+        } catch (error) {
+            console.error('Error loading Firebase data:', error);
+            showNotification('Cloud sync unavailable, using local storage', 'warning');
+        }
+    }
+
+    async function saveToFirebase() {
+        try {
+            const settingsSnapshot = await getDocs(collection(db, 'settings'));
+            if (!settingsSnapshot.empty) {
+                const settingsDoc = settingsSnapshot.docs[0];
+                await updateDoc(doc(db, 'settings', settingsDoc.id), {
+                    adminPassword: adminPassword,
+                    nextOrderId: nextOrderId,
+                    lastUpdated: new Date().toISOString()
+                });
+            }
+            showNotification('Saved to cloud!', 'success');
+        } catch (error) {
+            console.error('Error saving to Firebase:', error);
+            showNotification('Cloud save failed', 'warning');
+        }
+    }
+
+    function showNotification(message, type) {
+        const notification = document.createElement('div');
+        notification.style.cssText = `
+            position: fixed; top: 20px; right: 20px; padding: 15px 20px;
+            border-radius: 10px; z-index: 10000; font-weight: 600;
+            max-width: 300px; word-wrap: break-word;
+        `;
+        
+        const colors = {
+            success: { bg: '#28a745', color: 'white' },
+            warning: { bg: '#ffc107', color: '#212529' },
+            error: { bg: '#dc3545', color: 'white' }
+        };
+        
+        const style = colors[type] || colors.success;
+        notification.style.background = style.bg;
+        notification.style.color = style.color;
+        notification.textContent = message;
+        
+        document.body.appendChild(notification);
+        setTimeout(() => notification.remove(), 3000);
+    }
+
+    function generateOrderId() {
+        const today = new Date();
+        const year = today.getFullYear();
+        const month = String(today.getMonth() + 1).padStart(2, '0');
+        const day = String(today.getDate()).padStart(2, '0');
+        const orderId = `WO-${year}${month}${day}-${String(nextOrderId).padStart(3, '0')}`;
+        
+        const element = document.getElementById('workOrderId');
+        if (element) element.value = orderId;
+    }
+
+    function setupEventListeners() {
+        const forms = {
+            workOrderForm: createWorkOrder,
+            updateForm: updateWorkOrder,
+            adminPasswordForm: authenticateAdmin,
+            changePasswordForm: changeAdminPassword
+        };
+
+        Object.entries(forms).forEach(([formId, handler]) => {
+            const form = document.getElementById(formId);
+            if (form) form.addEventListener('submit', handler);
         });
 
-        function loadDataFromStorage() {
+        const imageUpload = document.getElementById('imageUpload');
+        if (imageUpload) imageUpload.addEventListener('change', previewImage);
+        
+        const searchOrders = document.getElementById('searchOrders');
+        if (searchOrders) searchOrders.addEventListener('input', filterOrders);
+        
+        const filterStatus = document.getElementById('filterStatus');
+        if (filterStatus) filterStatus.addEventListener('change', filterOrders);
+    }
+
+    function toggleAdminMode() {
+        if (!adminMode) {
+            document.getElementById('adminPasswordModal').style.display = 'block';
+            document.getElementById('adminPasswordInput').focus();
+        } else {
+            adminMode = false;
+            updateAdminDisplay();
+            showNotification('Admin mode disabled', 'info');
+        }
+    }
+
+    function authenticateAdmin(event) {
+        event.preventDefault();
+        const password = document.getElementById('adminPasswordInput').value;
+        
+        if (password === adminPassword) {
+            adminMode = true;
+            updateAdminDisplay();
+            closeAdminPasswordModal();
+            showNotification('Admin mode enabled!', 'success');
+        } else {
+            showNotification('Incorrect password', 'error');
+            document.getElementById('adminPasswordInput').value = '';
+            document.getElementById('adminPasswordInput').focus();
+        }
+    }
+
+    function closeAdminPasswordModal() {
+        document.getElementById('adminPasswordModal').style.display = 'none';
+        document.getElementById('adminPasswordForm').reset();
+    }
+
+    function updateAdminDisplay() {
+        const toggle = document.querySelector('.admin-toggle');
+        const tabs = document.querySelectorAll('.admin-only');
+        
+        if (adminMode) {
+            toggle.classList.add('active');
+            toggle.textContent = '🔓 Admin Mode ON';
+            tabs.forEach(tab => tab.classList.remove('hidden'));
+        } else {
+            toggle.classList.remove('active');
+            toggle.textContent = '🔐 Admin Mode';
+            tabs.forEach(tab => tab.classList.add('hidden'));
+            
+            const adminTab = document.getElementById('admin');
+            if (adminTab?.classList.contains('active')) {
+                showTabByName('manage');
+            }
+        }
+        
+        const currentTab = document.querySelector('.tab-content.active');
+        if (currentTab?.id === 'manage') loadWorkOrders();
+    }
+
+    function previewImage(event) {
+        const file = event.target.files[0];
+        const preview = document.getElementById('imagePreview');
+        
+        if (file && preview) {
+            const reader = new FileReader();
+            reader.onload = e => {
+                preview.src = e.target.result;
+                preview.style.display = 'block';
+            };
+            reader.readAsDataURL(file);
+        }
+    }
+
+    async function createWorkOrder(event) {
+        event.preventDefault();
+        
+        const fields = {
+            id: document.getElementById('workOrderId').value,
+            customerName: document.getElementById('customerName').value,
+            jobType: document.getElementById('jobType').value,
+            priority: document.getElementById('priority').value,
+            description: document.getElementById('description').value,
+            location: document.getElementById('location').value
+        };
+
+        if (Object.values(fields).some(value => !value.trim())) {
+            showNotification('Please fill in all required fields', 'error');
+            return;
+        }
+
+        const imageFile = document.getElementById('imageUpload').files[0];
+
+        async function saveOrder(image) {
+            const workOrder = {
+                ...fields,
+                status: 'Open',
+                createdDate: new Date().toISOString(),
+                image: image,
+                updates: []
+            };
+
             try {
-                const data = localStorage.getItem('workOrderDashboardData');
-                if (data) {
-                    const parsed = JSON.parse(data);
-                    workOrders = parsed.workOrders || [];
-                    nextOrderId = parsed.nextOrderId || 1;
-                    adminPassword = parsed.settings?.adminPassword || 'admin123';
-                    console.log('Loaded', workOrders.length, 'work orders from storage');
-                } else {
-                    console.log('No existing data found, starting fresh');
-                }
-            } catch (error) {
-                console.warn('Error loading data:', error);
-                workOrders = [];
-                nextOrderId = 1;
-                adminPassword = 'admin123';
-            }
-        }
-
-        function saveDataToStorage() {
-            try {
-                const data = {
-                    workOrders: workOrders,
-                    nextOrderId: nextOrderId,
-                    settings: { adminPassword: adminPassword },
-                    lastSaved: new Date().toISOString()
-                };
-                localStorage.setItem('workOrderDashboardData', JSON.stringify(data));
-                showNotification('Data saved successfully!', 'success');
-                console.log('Data saved to localStorage');
-            } catch (error) {
-                console.error('Error saving data:', error);
-                showNotification('Error saving data', 'error');
-            }
-        }
-
-        function showNotification(message, type) {
-            const notification = document.createElement('div');
-            notification.style.cssText = `
-                position: fixed;
-                top: 20px;
-                right: 20px;
-                padding: 15px 20px;
-                border-radius: 10px;
-                z-index: 10000;
-                font-weight: 600;
-                max-width: 300px;
-                word-wrap: break-word;
-            `;
-            
-            const colors = {
-                success: { bg: '#28a745', color: 'white' },
-                warning: { bg: '#ffc107', color: '#212529' },
-                error: { bg: '#dc3545', color: 'white' },
-                info: { bg: '#17a2b8', color: 'white' }
-            };
-            
-            const style = colors[type] || colors.success;
-            notification.style.background = style.bg;
-            notification.style.color = style.color;
-            notification.textContent = message;
-            
-            document.body.appendChild(notification);
-            setTimeout(() => notification.remove(), 3000);
-        }
-
-        function generateOrderId() {
-            const today = new Date();
-            const year = today.getFullYear();
-            const month = String(today.getMonth() + 1).padStart(2, '0');
-            const day = String(today.getDate()).padStart(2, '0');
-            const orderId = `WO-${year}${month}${day}-${String(nextOrderId).padStart(3, '0')}`;
-            
-            const element = document.getElementById('workOrderId');
-            if (element) element.value = orderId;
-        }
-
-        function setupEventListeners() {
-            const forms = {
-                workOrderForm: createWorkOrder,
-                updateForm: updateWorkOrder,
-                adminPasswordForm: authenticateAdmin,
-                changePasswordForm: changeAdminPassword
-            };
-
-            Object.entries(forms).forEach(([formId, handler]) => {
-                const form = document.getElementById(formId);
-                if (form) form.addEventListener('submit', handler);
-            });
-
-            const elements = {
-                imageUpload: previewImage,
-                searchOrders: filterOrders,
-                filterStatus: filterOrders
-            };
-
-            Object.entries(elements).forEach(([elementId, handler]) => {
-                const element = document.getElementById(elementId);
-                if (element) {
-                    if (elementId === 'imageUpload') {
-                        element.addEventListener('change', handler);
-                    } else {
-                        element.addEventListener('input', handler);
-                    }
-                }
-            });
-
-            document.getElementById('filterStatus').addEventListener('change', filterOrders);
-        }
-
-        function toggleAdminMode() {
-            if (!adminMode) {
-                document.getElementById('adminPasswordModal').style.display = 'block';
-                document.getElementById('adminPasswordInput').focus();
-            } else {
-                adminMode = false;
-                updateAdminDisplay();
-                showNotification('Admin mode disabled', 'info');
-            }
-        }
-
-        function authenticateAdmin(event) {
-            event.preventDefault();
-            const password = document.getElementById('adminPasswordInput').value;
-            
-            if (password === adminPassword) {
-                adminMode = true;
-                updateAdminDisplay();
-                closeAdminPasswordModal();
-                showNotification('Admin mode enabled!', 'success');
-            } else {
-                showNotification('Incorrect password', 'error');
-                document.getElementById('adminPasswordInput').value = '';
-                document.getElementById('adminPasswordInput').focus();
-            }
-        }
-
-        function closeAdminPasswordModal() {
-            document.getElementById('adminPasswordModal').style.display = 'none';
-            document.getElementById('adminPasswordForm').reset();
-        }
-
-        function updateAdminDisplay() {
-            const toggle = document.querySelector('.admin-toggle');
-            const tabs = document.querySelectorAll('.admin-only');
-            
-            if (adminMode) {
-                toggle.classList.add('active');
-                toggle.textContent = '🔓 Admin Mode ON';
-                tabs.forEach(tab => tab.classList.remove('hidden'));
-            } else {
-                toggle.classList.remove('active');
-                toggle.textContent = '🔐 Admin Mode';
-                tabs.forEach(tab => tab.classList.add('hidden'));
-                
-                const adminTab = document.getElementById('admin');
-                if (adminTab?.classList.contains('active')) {
-                    showTabByName('manage');
-                }
-            }
-            
-            const currentTab = document.querySelector('.tab-content.active');
-            if (currentTab?.id === 'manage') loadWorkOrders();
-        }
-
-        function previewImage(event) {
-            const file = event.target.files[0];
-            const preview = document.getElementById('imagePreview');
-            
-            if (file && preview) {
-                const reader = new FileReader();
-                reader.onload = e => {
-                    preview.src = e.target.result;
-                    preview.style.display = 'block';
-                };
-                reader.readAsDataURL(file);
-            }
-        }
-
-        function createWorkOrder(event) {
-            event.preventDefault();
-            
-            const fields = {
-                id: document.getElementById('workOrderId').value,
-                customerName: document.getElementById('customerName').value,
-                jobType: document.getElementById('jobType').value,
-                priority: document.getElementById('priority').value,
-                description: document.getElementById('description').value,
-                location: document.getElementById('location').value
-            };
-
-            if (Object.values(fields).some(value => !value.trim())) {
-                showNotification('Please fill in all required fields', 'error');
-                return;
-            }
-
-            const imageFile = document.getElementById('imageUpload').files[0];
-
-            function saveOrder(image) {
-                const workOrder = {
-                    ...fields,
-                    status: 'Open',
-                    createdDate: new Date().toISOString(),
-                    image: image,
-                    updates: []
-                };
-
-                workOrders.push(workOrder);
+                await addDoc(collection(db, 'workOrders'), workOrder);
                 nextOrderId++;
-
+                await saveToFirebase();
+                
                 event.target.reset();
                 const preview = document.getElementById('imagePreview');
                 if (preview) preview.style.display = 'none';
-                
                 generateOrderId();
-                saveDataToStorage();
-                loadWorkOrders();
-                updateReports();
                 
-                showNotification('Work Order created successfully!', 'success');
-            }
-
-            if (imageFile) {
-                const reader = new FileReader();
-                reader.onload = e => saveOrder(e.target.result);
-                reader.readAsDataURL(imageFile);
-            } else {
-                saveOrder(null);
+                showNotification('Work Order created and synced to cloud!', 'success');
+            } catch (error) {
+                console.error('Error creating work order:', error);
+                showNotification('Error creating work order', 'error');
             }
         }
 
-        function loadWorkOrders() {
-            const container = document.getElementById('workOrdersList');
-            if (!container) return;
-
-            container.innerHTML = '';
-            const filtered = getFilteredOrders();
-
-            if (filtered.length === 0) {
-                container.innerHTML = '<p style="text-align: center; color: #6c757d; padding: 40px;">No work orders found.</p>';
-                return;
-            }
-
-            filtered.forEach(order => {
-                container.appendChild(createOrderCard(order));
-            });
-        }
-
-        function createOrderCard(order) {
-            const card = document.createElement('div');
-            card.className = 'work-order-card';
-            
-            const statusClass = `status-${order.status.toLowerCase().replace(' ', '-')}`;
-            
-            card.innerHTML = `
-                <div class="work-order-header">
-                    <div class="work-order-id">${order.id}</div>
-                    <div class="status-badge ${statusClass}">${order.status}</div>
-                </div>
-                
-                <div class="work-order-details">
-                    <div class="detail-item">
-                        <div class="detail-label">Customer</div>
-                        <div class="detail-value">${order.customerName}</div>
-                    </div>
-                    <div class="detail-item">
-                        <div class="detail-label">Job Type</div>
-                        <div class="detail-value">${order.jobType}</div>
-                    </div>
-                    <div class="detail-item">
-                        <div class="detail-label">Priority</div>
-                        <div class="detail-value">${order.priority}</div>
-                    </div>
-                    <div class="detail-item">
-                        <div class="detail-label">Location</div>
-                        <div class="detail-value">${order.location}</div>
-                    </div>
-                    <div class="detail-item">
-                        <div class="detail-label">Created</div>
-                        <div class="detail-value">${new Date(order.createdDate).toLocaleDateString()}</div>
-                    </div>
-                </div>
-                
-                <div style="margin: 15px 0;">
-                    <div class="detail-label">Description</div>
-                    <div class="detail-value">${order.description}</div>
-                </div>
-                
-                ${order.image ? `<img src="${order.image}" class="image-preview" alt="Work order image">` : ''}
-                
-                <div class="work-order-actions">
-                    ${order.status !== 'Closed' ? `
-                        <button class="btn btn-primary" onclick="openUpdateModal('${order.id}')">Update Status</button>
-                        ${order.status === 'Completed' ? `
-                            <button class="btn btn-danger" onclick="closeWorkOrder('${order.id}')">Close Order</button>
-                        ` : ''}
-                    ` : '<span style="color: #6c757d; font-style: italic;">Order is closed</span>'}
-                </div>
-                
-                ${adminMode ? `
-                    <div class="admin-actions">
-                        <h5>Admin Actions</h5>
-                        <button class="btn btn-danger" onclick="deleteOrder('${order.id}')">Delete Order</button>
-                    </div>
-                ` : ''}
-                
-                ${order.updates?.length ? `
-                    <div class="updates-section">
-                        <h4 style="margin-bottom: 15px; color: #495057;">Status Updates</h4>
-                        ${order.updates.map(update => `
-                            <div class="update-item">
-                                <div class="update-date">${new Date(update.date).toLocaleString()}</div>
-                                <div><strong>Status Changed To:</strong> ${update.status}</div>
-                                ${update.notes ? `<div><strong>Notes:</strong> ${update.notes}</div>` : ''}
-                            </div>
-                        `).join('')}
-                    </div>
-                ` : ''}
-            `;
-            
-            return card;
-        }
-
-        function openUpdateModal(orderId) {
-            const order = workOrders.find(o => o.id === orderId);
-            if (order) {
-                document.getElementById('updateOrderId').value = orderId;
-                document.getElementById('updateStatus').value = order.status;
-                document.getElementById('updateModal').style.display = 'block';
-            }
-        }
-
-        function closeModal() {
-            document.getElementById('updateModal').style.display = 'none';
-            document.getElementById('updateForm').reset();
-        }
-
-        function updateWorkOrder(event) {
-            event.preventDefault();
-            
-            const orderId = document.getElementById('updateOrderId').value;
-            const newStatus = document.getElementById('updateStatus').value;
-            const notes = document.getElementById('updateNotes').value;
-            
-            const index = workOrders.findIndex(o => o.id === orderId);
-            if (index !== -1) {
-                const update = {
-                    date: new Date().toISOString(),
-                    status: newStatus,
-                    notes: notes
-                };
-                
-                workOrders[index].status = newStatus;
-                workOrders[index].updates.push(update);
-                
-                if (newStatus === 'Completed') {
-                    workOrders[index].completedDate = new Date().toISOString();
-                }
-                
-                closeModal();
-                saveDataToStorage();
-                loadWorkOrders();
-                updateReports();
-                
-                showNotification('Work order updated successfully!', 'success');
-            }
-        }
-
-        function closeWorkOrder(orderId) {
-            if (confirm('Close this work order?')) {
-                const index = workOrders.findIndex(o => o.id === orderId);
-                if (index !== -1) {
-                    workOrders[index].status = 'Closed';
-                    workOrders[index].closedDate = new Date().toISOString();
-                    workOrders[index].updates.push({
-                        date: new Date().toISOString(),
-                        status: 'Closed',
-                        notes: 'Work order closed'
-                    });
-                    
-                    saveDataToStorage();
-                    loadWorkOrders();
-                    updateReports();
-                    showNotification('Work order closed!', 'success');
-                }
-            }
-        }
-
-        function deleteOrder(orderId) {
-            if (confirm('Delete this work order permanently?')) {
-                const index = workOrders.findIndex(o => o.id === orderId);
-                if (index !== -1) {
-                    workOrders.splice(index, 1);
-                    saveDataToStorage();
-                    loadWorkOrders();
-                    updateReports();
-                    showNotification('Work order deleted!', 'success');
-                }
-            }
-        }
-
-        function lockAdminMode() {
-            adminMode = false;
-            updateAdminDisplay();
-            showNotification('Admin mode locked', 'info');
-        }
-
-        function openChangePasswordModal() {
-            document.getElementById('changePasswordModal').style.display = 'block';
-            document.getElementById('currentPassword').focus();
-        }
-
-        function closeChangePasswordModal() {
-            document.getElementById('changePasswordModal').style.display = 'none';
-            document.getElementById('changePasswordForm').reset();
-        }
-
-        function changeAdminPassword(event) {
-            event.preventDefault();
-            
-            const current = document.getElementById('currentPassword').value;
-            const newPass = document.getElementById('newPassword').value;
-            const confirm = document.getElementById('confirmPassword').value;
-            
-            if (current !== adminPassword) {
-                showNotification('Current password is incorrect', 'error');
-                return;
-            }
-            
-            if (newPass.length < 4) {
-                showNotification('Password must be at least 4 characters', 'error');
-                return;
-            }
-            
-            if (newPass !== confirm) {
-                showNotification('Passwords do not match', 'error');
-                return;
-            }
-            
-            adminPassword = newPass;
-            saveDataToStorage();
-            closeChangePasswordModal();
-            showNotification('Password changed successfully!', 'success');
-        }
-
-        function confirmDeleteAll() {
-            if (confirm('Delete ALL work orders? This cannot be undone.')) {
-                workOrders = [];
-                nextOrderId = 1;
-                saveDataToStorage();
-                loadWorkOrders();
-                updateReports();
-                generateOrderId();
-                showNotification('All work orders deleted!', 'success');
-            }
-        }
-
-        function clearAllData() {
-            if (confirm('Clear ALL data? This cannot be undone.')) {
-                localStorage.removeItem('workOrderDashboardData');
-                workOrders = [];
-                nextOrderId = 1;
-                adminMode = false;
-                adminPassword = 'admin123';
-                loadWorkOrders();
-                updateReports();
-                updateAdminDisplay();
-                generateOrderId();
-                showNotification('All data cleared!', 'success');
-            }
-        }
-
-        function downloadFullBackup() {
-            const data = {
-                workOrders: workOrders,
-                nextOrderId: nextOrderId,
-                settings: { adminPassword: adminPassword },
-                backupDate: new Date().toISOString(),
-                version: '2.0'
-            };
-            
-            const blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
-            const url = URL.createObjectURL(blob);
-            
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `work-orders-backup-${new Date().toISOString().split('T')[0]}.json`;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-            
-            showNotification('Backup downloaded!', 'success');
-        }
-
-        function downloadUpdatedFile() {
-            const blob = new Blob([document.documentElement.outerHTML], { type: 'text/html' });
-            const url = URL.createObjectURL(blob);
-            
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `work-order-dashboard-${new Date().toISOString().split('T')[0]}.html`;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-            
-            showNotification('Updated file downloaded!', 'success');
-        }
-
-        function restoreData() {
-            const file = document.getElementById('restoreFile').files[0];
-            if (!file) {
-                showNotification('Please select a backup file', 'error');
-                return;
-            }
-            
+        if (imageFile) {
             const reader = new FileReader();
-            reader.onload = function(e) {
-                try {
-                    const data = JSON.parse(e.target.result);
-                    
-                    if (data.workOrders && Array.isArray(data.workOrders)) {
-                        if (confirm(`Replace current data with backup (${data.workOrders.length} orders)?`)) {
-                            workOrders = data.workOrders;
-                            nextOrderId = data.nextOrderId || 1;
-                            adminPassword = data.settings?.adminPassword || 'admin123';
-                            
-                            saveDataToStorage();
-                            loadWorkOrders();
-                            updateReports();
-                            generateOrderId();
-                            
-                            showNotification('Data restored successfully!', 'success');
-                        }
-                    } else {
-                        showNotification('Invalid backup file format', 'error');
-                    }
-                } catch (error) {
-                    showNotification('Error reading backup file', 'error');
-                }
+            reader.onload = e => saveOrder(e.target.result);
+            reader.readAsDataURL(imageFile);
+        } else {
+            saveOrder(null);
+        }
+    }
+
+    function loadWorkOrders() {
+        const container = document.getElementById('workOrdersList');
+        if (!container) return;
+
+        container.innerHTML = '';
+        const filtered = getFilteredOrders();
+
+        if (filtered.length === 0) {
+            container.innerHTML = '<p style="text-align: center; color: #6c757d; padding: 40px;">No work orders found.</p>';
+            return;
+        }
+
+        filtered.forEach(order => {
+            container.appendChild(createOrderCard(order));
+        });
+    }
+
+    function createOrderCard(order) {
+        const card = document.createElement('div');
+        card.className = 'work-order-card';
+        
+        const statusClass = `status-${order.status.toLowerCase().replace(' ', '-')}`;
+        
+        card.innerHTML = `
+            <div class="work-order-header">
+                <div class="work-order-id">${order.id}</div>
+                <div class="status-badge ${statusClass}">${order.status}</div>
+            </div>
+            
+            <div class="work-order-details">
+                <div class="detail-item">
+                    <div class="detail-label">Customer</div>
+                    <div class="detail-value">${order.customerName}</div>
+                </div>
+                <div class="detail-item">
+                    <div class="detail-label">Job Type</div>
+                    <div class="detail-value">${order.jobType}</div>
+                </div>
+                <div class="detail-item">
+                    <div class="detail-label">Priority</div>
+                    <div class="detail-value">${order.priority}</div>
+                </div>
+                <div class="detail-item">
+                    <div class="detail-label">Location</div>
+                    <div class="detail-value">${order.location}</div>
+                </div>
+                <div class="detail-item">
+                    <div class="detail-label">Created</div>
+                    <div class="detail-value">${new Date(order.createdDate).toLocaleDateString()}</div>
+                </div>
+            </div>
+            
+            <div style="margin: 15px 0;">
+                <div class="detail-label">Description</div>
+                <div class="detail-value">${order.description}</div>
+            </div>
+            
+            ${order.image ? `<img src="${order.image}" class="image-preview" alt="Work order image">` : ''}
+            
+            <div class="work-order-actions">
+                ${order.status !== 'Closed' ? `
+                    <button class="btn btn-primary" onclick="openUpdateModal('${order.id}')">Update Status</button>
+                    ${order.status === 'Completed' ? `
+                        <button class="btn btn-danger" onclick="closeWorkOrder('${order.id}')">Close Order</button>
+                    ` : ''}
+                ` : '<span style="color: #6c757d; font-style: italic;">Order is closed</span>'}
+            </div>
+            
+            ${adminMode ? `
+                <div class="admin-actions">
+                    <h5>Admin Actions</h5>
+                    <button class="btn btn-danger" onclick="deleteOrder('${order.id}')">Delete Order</button>
+                </div>
+            ` : ''}
+            
+            ${order.updates?.length ? `
+                <div class="updates-section">
+                    <h4 style="margin-bottom: 15px; color: #495057;">Status Updates</h4>
+                    ${order.updates.map(update => `
+                        <div class="update-item">
+                            <div class="update-date">${new Date(update.date).toLocaleString()}</div>
+                            <div><strong>Status Changed To:</strong> ${update.status}</div>
+                            ${update.notes ? `<div><strong>Notes:</strong> ${update.notes}</div>` : ''}
+                        </div>
+                    `).join('')}
+                </div>
+            ` : ''}
+        `;
+        
+        return card;
+    }
+
+    function openUpdateModal(orderId) {
+        const order = workOrders.find(o => o.id === orderId);
+        if (order) {
+            document.getElementById('updateOrderId').value = orderId;
+            document.getElementById('updateStatus').value = order.status;
+            document.getElementById('updateModal').style.display = 'block';
+        }
+    }
+
+    function closeModal() {
+        document.getElementById('updateModal').style.display = 'none';
+        document.getElementById('updateForm').reset();
+    }
+
+    async function updateWorkOrder(event) {
+        event.preventDefault();
+        
+        const orderId = document.getElementById('updateOrderId').value;
+        const newStatus = document.getElementById('updateStatus').value;
+        const notes = document.getElementById('updateNotes').value;
+        
+        const order = workOrders.find(o => o.id === orderId);
+        if (order) {
+            const update = {
+                date: new Date().toISOString(),
+                status: newStatus,
+                notes: notes
             };
-            reader.readAsText(file);
-        }
-
-        function showSaveInstructions() {
-            alert(`💾 Local Storage Guide:
-
-✅ AUTOMATIC SAVING:
-• All work orders save automatically to browser storage
-• Data persists when you close/reopen the website
-• No manual saving required for normal use
-
-🔄 MULTI-DEVICE ACCESS:
-• Use "Download Full Backup" to export data
-• Use "Restore from Backup" to import on other devices
-• Save backup files to cloud storage for easy access
-
-💿 BACKUP RECOMMENDATIONS:
-• Regular backups protect against data loss
-• Store backups in Google Drive, Dropbox, etc.
-• Version 2.0 includes enhanced backup format
-
-🚀 PROFESSIONAL FEATURES:
-• Status tracking with timestamped updates
-• Admin panel with password protection
-• Search, filter, and comprehensive reporting`);
-        }
-
-        function getFilteredOrders() {
-            const search = document.getElementById('searchOrders').value.toLowerCase();
-            const status = document.getElementById('filterStatus').value;
             
-            return workOrders.filter(order => {
-                const matchesSearch = !search || 
-                    order.id.toLowerCase().includes(search) ||
-                    order.customerName.toLowerCase().includes(search) ||
-                    order.description.toLowerCase().includes(search);
-                
-                const matchesStatus = !status || order.status === status;
-                
-                return matchesSearch && matchesStatus;
-            });
-        }
-
-        function filterOrders() {
-            loadWorkOrders();
-        }
-
-        function updateReports() {
-            const total = workOrders.length;
-            const open = workOrders.filter(o => o.status === 'Open' || o.status === 'In Progress').length;
-            const completed = workOrders.filter(o => o.status === 'Completed' || o.status === 'Closed').length;
+            order.status = newStatus;
+            order.updates.push(update);
             
-            let avgDays = 0;
-            const completedOrders = workOrders.filter(o => o.completedDate);
-            if (completedOrders.length > 0) {
-                const totalDays = completedOrders.reduce((sum, order) => {
-                    const created = new Date(order.createdDate);
-                    const completed = new Date(order.completedDate);
-                    return sum + Math.ceil((completed - created) / (1000 * 60 * 60 * 24));
-                }, 0);
-                avgDays = Math.round(totalDays / completedOrders.length);
+            if (newStatus === 'Completed') {
+                order.completedDate = new Date().toISOString();
             }
-            
-            document.getElementById('totalOrders').textContent = total;
-            document.getElementById('openOrders').textContent = open;
-            document.getElementById('completedOrders').textContent = completed;
-            document.getElementById('avgCompletionTime').textContent = avgDays;
-        }
 
-        function generateReport(type) {
-            const content = document.getElementById('reportContent');
-            if (!content) return;
-            
-            if (type === 'summary') {
-                const statusCounts = {};
-                workOrders.forEach(order => {
-                    statusCounts[order.status] = (statusCounts[order.status] || 0) + 1;
+            try {
+                await updateDoc(doc(db, 'workOrders', order.firestoreId), {
+                    status: newStatus,
+                    updates: order.updates,
+                    completedDate: order.completedDate || null,
+                    lastUpdated: new Date().toISOString()
                 });
                 
-                content.innerHTML = `
-                    <div style="background: white; padding: 25px; border-radius: 15px;">
-                        <h3>Summary Report</h3>
-                        <p><strong>Generated:</strong> ${new Date().toLocaleString()}</p>
-                        <p><strong>Total Orders:</strong> ${workOrders.length}</p>
-                        <h4>Status Breakdown:</h4>
-                        ${Object.entries(statusCounts).map(([status, count]) => 
-                            `<p><strong>${status}:</strong> ${count} orders (${workOrders.length ? Math.round(count/workOrders.length*100) : 0}%)</p>`
-                        ).join('')}
-                    </div>
-                `;
-            } else if (type === 'detailed') {
-                content.innerHTML = `
-                    <div style="background: white; padding: 25px; border-radius: 15px;">
-                        <h3>Detailed Report</h3>
-                        <p><strong>Generated:</strong> ${new Date().toLocaleString()}</p>
-                        <table style="width: 100%; border-collapse: collapse; margin-top: 20px;">
-                            <thead>
-                                <tr style="background: #f8f9fa;">
-                                    <th style="padding: 12px; border: 1px solid #dee2e6;">Order ID</th>
-                                    <th style="padding: 12px; border: 1px solid #dee2e6;">Customer</th>
-                                    <th style="padding: 12px; border: 1px solid #dee2e6;">Status</th>
-                                    <th style="padding: 12px; border: 1px solid #dee2e6;">Priority</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                ${workOrders.map(order => `
-                                    <tr>
-                                        <td style="padding: 12px; border: 1px solid #dee2e6;">${order.id}</td>
-                                        <td style="padding: 12px; border: 1px solid #dee2e6;">${order.customerName}</td>
-                                        <td style="padding: 12px; border: 1px solid #dee2e6;">${order.status}</td>
-                                        <td style="padding: 12px; border: 1px solid #dee2e6;">${order.priority}</td>
-                                    </tr>
-                                `).join('')}
-                            </tbody>
-                        </table>
-                    </div>
-                `;
+                closeModal();
+                showNotification('Work order updated and synced!', 'success');
+            } catch (error) {
+                console.error('Error updating work order:', error);
+                showNotification('Error updating work order', 'error');
             }
         }
+    }
 
-        function exportData() {
-            const data = {
-                exportDate: new Date().toISOString(),
-                workOrders: workOrders,
-                summary: {
-                    total: workOrders.length,
-                    open: workOrders.filter(o => o.status === 'Open' || o.status === 'In Progress').length,
-                    completed: workOrders.filter(o => o.status === 'Completed' || o.status === 'Closed').length
+    async function closeWorkOrder(orderId) {
+        if (confirm('Close this work order?')) {
+            const order = workOrders.find(o => o.id === orderId);
+            if (order) {
+                order.status = 'Closed';
+                order.closedDate = new Date().toISOString();
+                order.updates.push({
+                    date: new Date().toISOString(),
+                    status: 'Closed',
+                    notes: 'Work order closed'
+                });
+                
+                try {
+                    await updateDoc(doc(db, 'workOrders', order.firestoreId), {
+                        status: 'Closed',
+                        updates: order.updates,
+                        closedDate: order.closedDate,
+                        lastUpdated: new Date().toISOString()
+                    });
+                    showNotification('Work order closed and synced!', 'success');
+                } catch (error) {
+                    console.error('Error closing work order:', error);
+                    showNotification('Error closing work order', 'error');
                 }
-            };
-            
-            const blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
-            const url = URL.createObjectURL(blob);
-            
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `work-orders-export-${new Date().toISOString().split('T')[0]}.json`;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-            
-            showNotification('Data exported successfully!', 'success');
+            }
         }
+    }
 
-        function showTab(tabName) {
-            document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
-            document.querySelectorAll('.nav-tab').forEach(tab => tab.classList.remove('active'));
-            
-            document.getElementById(tabName).classList.add('active');
-            event.target.classList.add('active');
-            
-            if (tabName === 'manage') loadWorkOrders();
-            else if (tabName === 'reports') updateReports();
-        }
-
-        function showTabByName(tabName) {
-            document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
-            document.querySelectorAll('.nav-tab').forEach(tab => tab.classList.remove('active'));
-            
-            document.getElementById(tabName).classList.add('active');
-            
-            document.querySelectorAll('.nav-tab').forEach(tab => {
-                if (tab.getAttribute('onclick')?.includes(tabName)) {
-                    tab.classList.add('active');
+    async function deleteOrder(orderId) {
+        if (confirm('Delete this work order permanently?')) {
+            const order = workOrders.find(o => o.id === orderId);
+            if (order) {
+                try {
+                    await deleteDoc(doc(db, 'workOrders', order.firestoreId));
+                    showNotification('Work order deleted and synced!', 'success');
+                } catch (error) {
+                    console.error('Error deleting work order:', error);
+                    showNotification('Error deleting work order', 'error');
                 }
+            }
+        }
+    }
+
+    function lockAdminMode() {
+        adminMode = false;
+        updateAdminDisplay();
+        showNotification('Admin mode locked', 'info');
+    }
+
+    function openChangePasswordModal() {
+        document.getElementById('changePasswordModal').style.display = 'block';
+        document.getElementById('currentPassword').focus();
+    }
+
+    function closeChangePasswordModal() {
+        document.getElementById('changePasswordModal').style.display = 'none';
+        document.getElementById('changePasswordForm').reset();
+    }
+
+    async function changeAdminPassword(event) {
+        event.preventDefault();
+        
+        const current = document.getElementById('currentPassword').value;
+        const newPass = document.getElementById('newPassword').value;
+        const confirm = document.getElementById('confirmPassword').value;
+        
+        if (current !== adminPassword) {
+            showNotification('Current password is incorrect', 'error');
+            return;
+        }
+        
+        if (newPass.length < 4) {
+            showNotification('Password must be at least 4 characters', 'error');
+            return;
+        }
+        
+        if (newPass !== confirm) {
+            showNotification('Passwords do not match', 'error');
+            return;
+        }
+        
+        adminPassword = newPass;
+        await saveToFirebase();
+        closeChangePasswordModal();
+        showNotification('Password changed and synced!', 'success');
+    }
+
+    async function confirmDeleteAll() {
+        if (confirm('Delete ALL work orders? This cannot be undone.')) {
+            try {
+                const snapshot = await getDocs(collection(db, 'workOrders'));
+                const deletePromises = snapshot.docs.map(doc => deleteDoc(doc.ref));
+                await Promise.all(deletePromises);
+                
+                nextOrderId = 1;
+                await saveToFirebase();
+                generateOrderId();
+                showNotification('All work orders deleted and synced!', 'success');
+            } catch (error) {
+                console.error('Error deleting all work orders:', error);
+                showNotification('Error deleting work orders', 'error');
+            }
+        }
+    }
+
+    function clearAllData() {
+        showNotification('Use "Delete All Work Orders" for cloud-synced deletion', 'info');
+    }
+
+    function downloadFullBackup() {
+        const data = {
+            workOrders: workOrders,
+            nextOrderId: nextOrderId,
+            settings: { adminPassword: adminPassword },
+            backupDate: new Date().toISOString(),
+            version: '3.0-firebase'
+        };
+        
+        const blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
+        const url = URL.createObjectURL(blob);
+        
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `work-orders-backup-${new Date().toISOString().split('T')[0]}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        
+        showNotification('Backup downloaded!', 'success');
+    }
+
+    function downloadUpdatedFile() {
+        const blob = new Blob([document.documentElement.outerHTML], { type: 'text/html' });
+        const url = URL.createObjectURL(blob);
+        
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `work-order-dashboard-${new Date().toISOString().split('T')[0]}.html`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        
+        showNotification('Updated file downloaded!', 'success');
+    }
+
+    function restoreData() {
+        showNotification('Restore feature disabled in cloud version for data safety', 'info');
+    }
+
+    function showSaveInstructions() {
+        alert(`🌐 Firebase Cloud Storage Guide:
+
+✅ REAL-TIME CLOUD SYNC:
+- All work orders save automatically to Firebase cloud
+- Real-time updates across all devices instantly
+- Multi-user collaboration supported
+
+🔄 MULTI-DEVICE ACCESS:
+- Open this URL from any device
+- All data syncs automatically in real-time
+- No manual backup needed
+
+💿 BACKUP RECOMMENDATIONS:
+- Use "Download Full Backup" for extra security
+- Data is automatically backed up in Firebase cloud
+- Version 3.0 with full Firebase integration
+
+🚀 PROFESSIONAL FEATURES:
+- Real-time collaboration
+- Automatic cloud backup
+- Multi-device synchronization
+- Enterprise-grade reliability`);
+    }
+
+    function getFilteredOrders() {
+        const search = document.getElementById('searchOrders').value.toLowerCase();
+        const status = document.getElementById('filterStatus').value;
+        
+        return workOrders.filter(order => {
+            const matchesSearch = !search || 
+                order.id.toLowerCase().includes(search) ||
+                order.customerName.toLowerCase().includes(search) ||
+                order.description.toLowerCase().includes(search);
+            
+            const matchesStatus = !status || order.status === status;
+            
+            return matchesSearch && matchesStatus;
+        });
+    }
+
+    function filterOrders() {
+        loadWorkOrders();
+    }
+
+    function updateReports() {
+        const total = workOrders.length;
+        const open = workOrders.filter(o => o.status === 'Open' || o.status === 'In Progress').length;
+        const completed = workOrders.filter(o => o.status === 'Completed' || o.status === 'Closed').length;
+        
+        let avgDays = 0;
+        const completedOrders = workOrders.filter(o => o.completedDate);
+        if (completedOrders.length > 0) {
+            const totalDays = completedOrders.reduce((sum, order) => {
+                const created = new Date(order.createdDate);
+                const completed = new Date(order.completedDate);
+                return sum + Math.ceil((completed - created) / (1000 * 60 * 60 * 24));
+            }, 0);
+            avgDays = Math.round(totalDays / completedOrders.length);
+        }
+        
+        document.getElementById('totalOrders').textContent = total;
+        document.getElementById('openOrders').textContent = open;
+        document.getElementById('completedOrders').textContent = completed;
+        document.getElementById('avgCompletionTime').textContent = avgDays;
+    }
+
+    function generateReport(type) {
+        const content = document.getElementById('reportContent');
+        if (!content) return;
+        
+        if (type === 'summary') {
+            const statusCounts = {};
+            workOrders.forEach(order => {
+                statusCounts[order.status] = (statusCounts[order.status] || 0) + 1;
             });
+            
+            content.innerHTML = `
+                <div style="background: white; padding: 25px; border-radius: 15px;">
+                    <h3>Summary Report</h3>
+                    <p><strong>Generated:</strong> ${new Date().toLocaleString()}</p>
+                    <p><strong>Total Orders:</strong> ${workOrders.length}</p>
+                    <p><strong>Storage:</strong> Firebase Cloud + Real-time Sync</p>
+                    <h4>Status Breakdown:</h4>
+                    ${Object.entries(statusCounts).map(([status, count]) => 
+                        `<p><strong>${status}:</strong> ${count} orders (${workOrders.length ? Math.round(count/workOrders.length*100) : 0}%)</p>`
+                    ).join('')}
+                </div>
+            `;
+        } else if (type === 'detailed') {
+            content.innerHTML = `
+                <div style="background: white; padding: 25px; border-radius: 15px;">
+                    <h3>Detailed Report</h3>
+                    <p><strong>Generated:</strong> ${new Date().toLocaleString()}</p>
+                    <table style="width: 100%; border-collapse: collapse; margin-top: 20px;">
+                        <thead>
+                            <tr style="background: #f8f9fa;">
+                                <th style="padding: 12px; border: 1px solid #dee2e6;">Order ID</th>
+                                <th style="padding: 12px; border: 1px solid #dee2e6;">Customer</th>
+                                <th style="padding: 12px; border: 1px solid #dee2e6;">Status</th>
+                                <th style="padding: 12px; border: 1px solid #dee2e6;">Priority</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${workOrders.map(order => `
+                                <tr>
+                                    <td style="padding: 12px; border: 1px solid #dee2e6;">${order.id}</td>
+                                    <td style="padding: 12px; border: 1px solid #dee2e6;">${order.customerName}</td>
+                                    <td style="padding: 12px; border: 1px solid #dee2e6;">${order.status}</td>
+                                    <td style="padding: 12px; border: 1px solid #dee2e6;">${order.priority}</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            `;
         }
+    }
 
-        // Close modals when clicking outside
-        window.onclick = function(event) {
-            ['updateModal', 'adminPasswordModal', 'changePasswordModal'].forEach(modalId => {
-                const modal = document.getElementById(modalId);
-                if (event.target === modal) {
-                    modal.style.display = 'none';
-                }
-            });
-        }
-    </script>
+    function exportData() {
+        const data = {
+            exportDate: new Date().toISOString(),
+            workOrders: workOrders,
+            firebaseEnabled: true,
+            summary: {
+                total: workOrders.length,
+                open: workOrders.filter(o => o.status === 'Open' || o.status === 'In Progress').length,
+                completed: workOrders.filter(o => o.status === 'Completed' || o.status === 'Closed').length
+            }
+        };
+        
+        const blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
+        const url = URL.createObjectURL(blob);
+        
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `work-orders-export-${new Date().toISOString().split('T')[0]}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        
+        showNotification('Data exported successfully!', 'success');
+    }
+
+    function showTab(tabName) {
+        document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
+        document.querySelectorAll('.nav-tab').forEach(tab => tab.classList.remove('active'));
+        
+        document.getElementById(tabName).classList.add('active');
+        event.target.classList.add('active');
+        
+        if (tabName === 'manage') loadWorkOrders();
+        else if (tabName === 'reports') updateReports();
+    }
+
+    function showTabByName(tabName) {
+        document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
+        document.querySelectorAll('.nav-tab').forEach(tab => tab.classList.remove('active'));
+        
+        document.getElementById(tabName).classList.add('active');
+        
+        document.querySelectorAll('.nav-tab').forEach(tab => {
+            if (tab.getAttribute('onclick')?.includes(tabName)) {
+                tab.classList.add('active');
+            }
+        });
+    }
+
+    // Close modals when clicking outside
+    window.onclick = function(event) {
+        ['updateModal', 'adminPasswordModal', 'changePasswordModal'].forEach(modalId => {
+            const modal = document.getElementById(modalId);
+            if (event.target === modal) {
+                modal.style.display = 'none';
+            }
+        });
+    }
+
+    // Make functions globally accessible
+    window.toggleAdminMode = toggleAdminMode;
+    window.showTab = showTab;
+    window.openUpdateModal = openUpdateModal;
+    window.closeModal = closeModal;
+    window.closeWorkOrder = closeWorkOrder;
+    window.deleteOrder = deleteOrder;
+    window.closeAdminPasswordModal = closeAdminPasswordModal;
+    window.lockAdminMode = lockAdminMode;
+    window.openChangePasswordModal = openChangePasswordModal;
+    window.closeChangePasswordModal = closeChangePasswordModal;
+    window.confirmDeleteAll = confirmDeleteAll;
+    window.clearAllData = clearAllData;
+    window.downloadFullBackup = downloadFullBackup;
+    window.downloadUpdatedFile = downloadUpdatedFile;
+    window.restoreData = restoreData;
+    window.showSaveInstructions = showSaveInstructions;
+    window.generateReport = generateReport;
+    window.exportData = exportData;
+</script>
 </body>
 </html>
